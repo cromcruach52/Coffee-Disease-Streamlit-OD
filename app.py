@@ -14,7 +14,7 @@ import helper
 # Setting page layout
 st.set_page_config(
     page_title="Coffee Leaf Classification and Disease Detection",
-    page_icon="🤖",
+    page_icon="🍃",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -45,6 +45,9 @@ detection_model_choice = st.sidebar.radio(
 
 confidence = float(st.sidebar.slider("Select Model Confidence", 25, 100, 40)) / 100
 
+# New slider for overlap threshold
+overlap_threshold = float(st.sidebar.slider("Select Overlap Threshold", 0, 100, 30)) / 100
+
 # Selecting Detection Model
 if detection_model_choice == 'Disease Detection':
     model_path = Path(settings.DISEASE_DETECTION_MODEL)
@@ -64,11 +67,6 @@ except Exception as ex:
     st.error(f"Unable to load model. Check the specified path: {model_path}")
     st.error(ex)
 
-# Commenting out Image/Video Config
-# st.sidebar.header("Image/Video Config")
-# source_radio = st.sidebar.radio(
-#     "Select Source", settings.SOURCES_LIST)
-
 source_img = st.sidebar.file_uploader(
     "Choose an image...", type=("jpg", "jpeg", "png", 'bmp', 'webp'))
 
@@ -77,15 +75,12 @@ def draw_bounding_boxes(image, boxes, labels, colors):
     res_image = np.array(image)
     height, width, _ = res_image.shape  # Get image dimensions
 
-    # Extract the coordinates, classes, and confidence levels from the 'Boxes' object
-    box_coordinates = boxes.xyxy.cpu().numpy()
-    class_ids = boxes.cls.cpu().numpy()
-    confidences = boxes.conf.cpu().numpy()
-
-    for idx, (x1, y1, x2, y2) in enumerate(box_coordinates):
+    for box in boxes:
+        # Extract information from the box
+        x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
         x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
-        label_idx = int(class_ids[idx])
-        confidence = confidences[idx]
+        label_idx = int(box.cls)
+        confidence = float(box.conf)
         label = f"{labels[label_idx]}: {confidence:.2f}"
 
         # Determine color based on class
@@ -102,6 +97,46 @@ def draw_bounding_boxes(image, boxes, labels, colors):
 
     return res_image
 
+def non_max_suppression(boxes, overlap_threshold):
+    """Apply non-max suppression to remove overlapping boxes."""
+    if len(boxes) == 0:
+        return []
+
+    # Convert boxes to numpy array
+    boxes_np = boxes.xyxy.cpu().numpy()
+    scores = boxes.conf.cpu().numpy()
+
+    # Compute areas of boxes
+    x1 = boxes_np[:, 0]
+    y1 = boxes_np[:, 1]
+    x2 = boxes_np[:, 2]
+    y2 = boxes_np[:, 3]
+    areas = (x2 - x1 + 1) * (y2 - y1 + 1)
+
+    # Sort boxes by confidence score
+    order = scores.argsort()[::-1]
+
+    keep = []
+    while order.size > 0:
+        i = order[0]
+        keep.append(i)
+
+        # Compute IoU of the picked box with the rest
+        xx1 = np.maximum(x1[i], x1[order[1:]])
+        yy1 = np.maximum(y1[i], y1[order[1:]])
+        xx2 = np.minimum(x2[i], x2[order[1:]])
+        yy2 = np.minimum(y2[i], y2[order[1:]])
+
+        w = np.maximum(0.0, xx2 - xx1 + 1)
+        h = np.maximum(0.0, yy2 - yy1 + 1)
+        inter = w * h
+        ovr = inter / (areas[i] + areas[order[1:]] - inter)
+
+        # Keep boxes with IoU less than the threshold
+        inds = np.where(ovr <= overlap_threshold)[0]
+        order = order[inds + 1]
+
+    return [boxes[i] for i in keep]
 
 col1, col2 = st.columns(2)
 
@@ -133,9 +168,9 @@ with col2:
                 res_disease = model_disease.predict(uploaded_image, conf=confidence)
                 res_leaf = model_leaf.predict(uploaded_image, conf=confidence)
 
-                # Extract boxes and labels for both models
-                disease_boxes = res_disease[0].boxes
-                leaf_boxes = res_leaf[0].boxes
+                # Apply non-max suppression
+                disease_boxes = non_max_suppression(res_disease[0].boxes, overlap_threshold)
+                leaf_boxes = non_max_suppression(res_leaf[0].boxes, overlap_threshold)
 
                 # Merge the labels by converting them to dictionaries and concatenating
                 combined_labels = {**res_disease[0].names, **res_leaf[0].names}
@@ -164,7 +199,7 @@ with col2:
             else:
                 # Single model prediction
                 res = model.predict(uploaded_image, conf=confidence)
-                boxes = res[0].boxes
+                boxes = non_max_suppression(res[0].boxes, overlap_threshold)
                 labels = res[0].names
 
                 # Choose the appropriate color map based on the model
@@ -183,4 +218,3 @@ with col2:
                             st.write(box.data)
                 except Exception as ex:
                     st.write("No image is uploaded yet!")
-
