@@ -37,7 +37,7 @@ cdisease_colors = {
 st.title("Coffee Leaf Classification and Disease Detection")
 
 # Sidebar
-st.sidebar.header("ML Model Config")
+st.sidebar.header("DL Model Config")
 
 # Model Selection
 detection_model_choice = st.sidebar.radio(
